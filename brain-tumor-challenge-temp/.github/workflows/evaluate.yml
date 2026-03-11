@@ -1,0 +1,194 @@
+name: 🧠 Evaluate Submission
+
+on:
+  pull_request:
+    paths:
+      - 'submissions/**.enc'
+    types: [opened, synchronize, reopened]
+
+jobs:
+  evaluate:
+    name: Decrypt & Score Submission
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ─────────────────────────────────────
+      # 1. Checkout the PR branch
+      # ─────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ─────────────────────────────────────
+      # 2. Set up Python
+      # ─────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install cryptography scikit-learn
+
+      # ─────────────────────────────────────
+      # 3. Detect which .enc file was added
+      # ─────────────────────────────────────
+      - name: Detect new .enc submission
+        id: detect
+        run: |
+          # Find .enc files changed in this PR
+          git fetch origin main
+          CHANGED=$(git diff --name-only origin/main HEAD -- 'submissions/*.enc')
+          echo "Changed files: $CHANGED"
+
+          COUNT=$(echo "$CHANGED" | grep -c '\.enc$' || true)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No .enc file found in submissions/ folder."
+            exit 1
+          fi
+          if [ "$COUNT" -gt 1 ]; then
+            echo "::error::Only one .enc file per PR is allowed. Found: $COUNT"
+            exit 1
+          fi
+
+          ENC_FILE=$(echo "$CHANGED" | grep '\.enc$' | head -1)
+          TEAM_NAME=$(basename "$ENC_FILE" .enc)
+          echo "enc_file=$ENC_FILE" >> $GITHUB_OUTPUT
+          echo "team_name=$TEAM_NAME" >> $GITHUB_OUTPUT
+          echo "Team: $TEAM_NAME | File: $ENC_FILE"
+
+      # ─────────────────────────────────────
+      # 4. Write private key from secret
+      # ─────────────────────────────────────
+      - name: Write private key
+        run: |
+          mkdir -p scripts
+          echo "${{ secrets.PRIVATE_KEY }}" > scripts/private_key.pem
+          chmod 600 scripts/private_key.pem
+
+      # ─────────────────────────────────────
+      # 5. Decrypt participant submission
+      # ─────────────────────────────────────
+      - name: Decrypt submission
+        run: |
+          mkdir -p evaluation/decrypted
+          python evaluation/decrypt.py \
+            "${{ steps.detect.outputs.enc_file }}" \
+            scripts/private_key.pem \
+            "evaluation/decrypted/${{ steps.detect.outputs.team_name }}.csv"
+
+      # ─────────────────────────────────────
+      # 6. Decrypt hidden test labels
+      # ─────────────────────────────────────
+      - name: Decrypt hidden labels
+        run: |
+          python evaluation/decrypt.py \
+            evaluation/hidden_labels.enc \
+            scripts/private_key.pem \
+            evaluation/hidden_labels_tmp.csv
+
+      # ─────────────────────────────────────
+      # 7. Evaluate predictions
+      # ─────────────────────────────────────
+      - name: Evaluate predictions
+        id: score
+        run: |
+          python evaluation/evaluate.py \
+            "evaluation/decrypted/${{ steps.detect.outputs.team_name }}.csv" \
+            evaluation/hidden_labels_tmp.csv \
+            "${{ steps.detect.outputs.team_name }}"
+
+          # Extract scores for PR comment
+          RESULT_FILE="evaluation/results/${{ steps.detect.outputs.team_name }}.json"
+          F1=$(python -c "import json; d=json.load(open('$RESULT_FILE')); print(d['f1_weighted'])")
+          ACC=$(python -c "import json; d=json.load(open('$RESULT_FILE')); print(d['accuracy'])")
+          echo "f1=$F1" >> $GITHUB_OUTPUT
+          echo "acc=$ACC" >> $GITHUB_OUTPUT
+
+      # ─────────────────────────────────────
+      # 8. Update leaderboard
+      # ─────────────────────────────────────
+      - name: Update leaderboard
+        run: |
+          python leaderboard/update_leaderboard.py \
+            "evaluation/results/${{ steps.detect.outputs.team_name }}.json"
+
+      # ─────────────────────────────────────
+      # 9. Commit leaderboard update to main
+      # ─────────────────────────────────────
+      - name: Commit leaderboard to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+
+          # Copy updated leaderboard from PR branch
+          git checkout ${{ github.head_ref }} -- leaderboard/leaderboard.csv || true
+          git checkout ${{ github.head_ref }} -- "evaluation/results/${{ steps.detect.outputs.team_name }}.json" || true
+
+          git add leaderboard/leaderboard.csv
+          git add "evaluation/results/" || true
+          git diff --staged --quiet || git commit -m "🏆 Leaderboard: update after ${{ steps.detect.outputs.team_name }} submission [skip ci]"
+          git push origin main
+
+      # ─────────────────────────────────────
+      # 10. Clean up sensitive files
+      # ─────────────────────────────────────
+      - name: Clean up secrets
+        if: always()
+        run: |
+          rm -f scripts/private_key.pem
+          rm -f evaluation/hidden_labels_tmp.csv
+          rm -f "evaluation/decrypted/${{ steps.detect.outputs.team_name }}.csv"
+
+      # ─────────────────────────────────────
+      # 11. Post results as PR comment
+      # ─────────────────────────────────────
+      - name: Post score to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const team = "${{ steps.detect.outputs.team_name }}";
+            const f1   = "${{ steps.score.outputs.f1 }}";
+            const acc  = "${{ steps.score.outputs.acc }}";
+            const body = `## 🧠 Brain Tumor MRI Challenge — Evaluation Result
+
+            | Metric | Score |
+            |--------|-------|
+            | **F1 Score (weighted)** | \`${f1}\` |
+            | **Accuracy** | \`${acc}\` |
+
+            **Team:** \`${team}\`
+
+            ✅ Leaderboard has been updated. Check [\`leaderboard/leaderboard.csv\`](../blob/main/leaderboard/leaderboard.csv) for current rankings.
+
+            > _Evaluated automatically by GitHub Actions — labels were never exposed._`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      # ─────────────────────────────────────
+      # 12. Handle evaluation errors
+      # ─────────────────────────────────────
+      - name: Post error to PR
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ❌ Evaluation Failed\n\nYour submission could not be evaluated. Common causes:\n- CSV format incorrect (must be \`filename,prediction\`)\n- Invalid label values (must be 0, 1, 2, or 3)\n- Corrupted .enc file\n- Wrong encryption key used\n\nCheck the [Actions logs](../actions) for details. Fix the issue and push a new commit to this PR.`
+            });

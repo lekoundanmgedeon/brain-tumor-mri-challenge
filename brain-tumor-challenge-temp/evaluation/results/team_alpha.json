@@ -1,0 +1,9 @@
+{
+  "team": "team_alpha",
+  "accuracy": 1.0,
+  "f1_weighted": 1.0,
+  "f1_macro": 1.0,
+  "coverage": 5,
+  "total": 5,
+  "timestamp": "2026-03-11 11:40 UTC"
+}

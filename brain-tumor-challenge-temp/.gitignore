@@ -1,0 +1,25 @@
+# NEVER commit these
+scripts/private_key.pem
+evaluation/hidden_labels.csv
+evaluation/hidden_labels_tmp.csv
+evaluation/decrypted/
+submissions/*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+# Data (too large — participants download from Kaggle)
+data/Training/
+data/Testing/
+
+# Model checkpoints
+baseline/best_model.pth
+*.pt
+*.pth
+
+# Jupyter
+.ipynb_checkpoints/
