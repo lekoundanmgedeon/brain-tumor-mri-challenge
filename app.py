@@ -3,6 +3,13 @@ import pandas as pd
 import os
 import plotly.express as px
 
+
+def format_rank(rank):
+    if rank == 1: return "🥇"
+    if rank == 2: return "🥈"
+    if rank == 3: return "🥉"
+    return str(rank)
+
 st.set_page_config(page_title="Brain Tumor Challenge Leaderboard", layout="wide")
 
 st.title("🏆 Brain Tumor MRI Challenge - Leaderboard")
@@ -10,6 +17,7 @@ st.markdown("""
 Bienvenue sur le tableau de bord officiel de la compétition. 
 Les scores sont mis à jour automatiquement à chaque nouvelle soumission validée.
 """)
+
 
 # --- CHARGEMENT DES DONNÉES ---
 @st.cache_data(ttl=600)
@@ -72,3 +80,4 @@ st.sidebar.info("""
 if st.sidebar.button("Actualiser les données"):
     st.cache_data.clear()
     st.rerun()
+
