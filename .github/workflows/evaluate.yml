@@ -1,50 +1,68 @@
-name: 🧠 Evaluate Submission
+name: ML Competition Evaluation
 
 on:
-  push:
-    branches: [ main ]
+  pull_request:
+    branches:
+      - main
     paths:
-      - 'submissions/**.enc'
-  workflow_dispatch:
+      - 'submissions/*.csv'  # Se déclenche sur les fichiers CSV en clair
 
 jobs:
   evaluate:
-    name: Decrypt & Score Submission
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v3
         with:
-          fetch-depth: 0
+          fetch-depth: 0 
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.9'
 
       - name: Install dependencies
         run: |
-          pip install cryptography scikit-learn pandas tabulate
+          python -m pip install --upgrade pip
+          pip install pandas scikit-learn cryptography
 
-      - name: Detect new .enc submission
-        id: detect
+      - name: Setup Private Key
+        # Nécessaire uniquement pour déchiffrer VOTRE fichier de vérité
         run: |
-          # On cherche le fichier .enc dans le dernier commit
-          ENC_FILE=$(git diff --name-only HEAD^ HEAD | grep 'submissions/.*\.enc$' | head -1)
-          if [ -z "$ENC_FILE" ]; then
-            # Si on lance manuellement (workflow_dispatch), on prend le premier .enc trouvé
-            ENC_FILE=$(find submissions -name "*.enc" | head -1)
-          fi
-          
-          if [ -z "$ENC_FILE" ]; then
-            echo "::error::Aucun fichier .enc trouvé."
-            exit 1
-          fi
-          
-          TEAM_NAME=$(basename "$ENC_FILE" .enc)
-          echo "enc_file=$ENC_FILE" >> $GITHUB_OUTPUT
-          echo "team_name=$TEAM_NAME" >> $GITHUB_OUTPUT
+          echo "${{ secrets.PRIVATE_KEY }}" > private_key_temp.pem
+          chmod 600 private_key_temp.pem
+
+      - name: Decrypt Truth Labels
+        # On déchiffre true_labels.csv.enc pour l'évaluation
+        run: |
+          python evaluation/decrypt.py \
+            evaluation/true_labels.csv.enc \
+            private_key_temp.pem \
+            evaluation/true_labels.csv
+
+      - name: Run Evaluation
+        run: |
+          # On cherche le fichier CSV soumis
+          SUB_FILE=$(ls submissions/*.csv | head -n 1)
+          # On lance l'évaluation directement sur le CSV en clair
+          python evaluation/evaluate.py --submission "$SUB_FILE"
+
+      - name: Update Leaderboard
+        run: python leaderboard/update_leaderboard.py
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f private_key_temp.pem
+          rm -f evaluation/true_labels.csv
+
+      - name: Commit and Push Results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action Bot"
+          git add leaderboard/leaderboard.csv evaluation/results/*.json
+          git commit -m "chore: update leaderboard [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.head_ref }}
