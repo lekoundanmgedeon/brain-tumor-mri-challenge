@@ -19,6 +19,7 @@ data/test/
 data/train/
 data/Train/
 data/Test/
+evaluation/true_labels.csv
 # Model checkpoints
 baseline/best_model.pth
 *.pt

@@ -2,15 +2,22 @@ name: ML Competition Evaluation
 
 on:
   pull_request:
+    branches:
+      - main
     paths:
-      - 'submissions/**'
+      - 'submissions/*.csv'  # Se déclenche sur les fichiers CSV en clair
 
 jobs:
   evaluate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -20,29 +27,42 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas scikit-learn
+          pip install pandas scikit-learn cryptography
 
-      - name: Generate Truth Labels
-        run: python evaluation/setup_hidden_labels.py
-
-      - name: Decrypt Submission
-        # Cette étape suppose que vous avez stocké votre clé privée dans les secrets GitHub
-        # Si vous n'utilisez pas d'encryption pour le moment, vous pouvez commenter cette partie
+      - name: Setup Private Key
+        # Nécessaire uniquement pour déchiffrer VOTRE fichier de vérité
         run: |
-          # python evaluation/decrypt.py --input submissions/baseline.enc --key ${{ secrets.PRIVATE_KEY }}
-          echo "Déchiffrement effectué (simulé)"
+          echo "${{ secrets.PRIVATE_KEY }}" > private_key_temp.pem
+          chmod 600 private_key_temp.pem
+
+      - name: Decrypt Truth Labels
+        # On déchiffre true_labels.csv.enc pour l'évaluation
+        run: |
+          python evaluation/decrypt.py \
+            evaluation/true_labels.csv.enc \
+            private_key_temp.pem \
+            evaluation/true_labels.csv
 
       - name: Run Evaluation
-        run: python evaluation/evaluate.py
+        run: |
+          # On cherche le fichier CSV soumis
+          SUB_FILE=$(ls submissions/*.csv | head -n 1)
+          # On lance l'évaluation directement sur le CSV en clair
+          python evaluation/evaluate.py --submission "$SUB_FILE"
 
       - name: Update Leaderboard
         run: python leaderboard/update_leaderboard.py
 
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f private_key_temp.pem
+          rm -f evaluation/true_labels.csv
+
       - name: Commit and Push Results
-        # Permet de mettre à jour automatiquement le fichier leaderboard.csv sur le dépôt
         run: |
           git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          git config --local user.name "GitHub Action Bot"
           git add leaderboard/leaderboard.csv evaluation/results/*.json
-          git commit -m "Update leaderboard with new submission" || echo "No changes to commit"
-          git push
+          git commit -m "chore: update leaderboard [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.head_ref }}
